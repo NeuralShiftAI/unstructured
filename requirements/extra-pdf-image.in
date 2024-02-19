@@ -9,7 +9,7 @@ pillow_heif
 pypdf
 # Do not move to constraints.in, otherwise unstructured-inference will not be upgraded
 # when unstructured library is.
-unstructured-inference==0.7.23
+unstructured-inference @ git+https://github.com/jlcsilva/unstructured-inference.git@b5ef9596f4e548d46e45fc64681c5094221973ea
 # unstructured fork of pytesseract that provides an interface to allow for multiple output formats
 # from one tesseract call
 unstructured.pytesseract>=0.3.12
