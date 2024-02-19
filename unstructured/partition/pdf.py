@@ -110,8 +110,6 @@ if TYPE_CHECKING:
 # the bug: https://github.com/pdfminer/pdfminer.six/pull/885
 psparser.PSBaseParser._parse_keyword = parse_keyword  # type: ignore
 
-RE_MULTISPACE_INCLUDING_NEWLINES = re.compile(pattern=r"\s+", flags=re.DOTALL)
-
 
 @requires_dependencies("unstructured_inference")
 def default_hi_res_model() -> str:
