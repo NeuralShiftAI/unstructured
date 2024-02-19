@@ -560,19 +560,13 @@ def _partition_pdf_or_image_local(
         if isinstance(el, PageBreak) and not include_page_breaks:
             continue
 
-        if isinstance(el, Image):
+        if (
+            isinstance(el, Image) 
+            or el.text 
+            or isinstance(el, PageBreak) 
+            or hi_res_model_name.startswith("chipper")
+        ):
             out_elements.append(cast(Element, el))
-        # NOTE(crag): this is probably always a Text object, but check for the sake of typing
-        elif isinstance(el, Text):
-            el.text = re.sub(
-                RE_MULTISPACE_INCLUDING_NEWLINES,
-                " ",
-                el.text or "",
-            ).strip()
-            # NOTE(alan): with chipper there are parent elements with no text we don't want to
-            # filter those out and leave the children orphaned.
-            if el.text or isinstance(el, PageBreak) or hi_res_model_name.startswith("chipper"):
-                out_elements.append(cast(Element, el))
 
     return out_elements
 
