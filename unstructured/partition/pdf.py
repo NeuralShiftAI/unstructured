@@ -103,6 +103,17 @@ from unstructured.partition.utils.sorting import (
 from unstructured.patches.pdfminer import parse_keyword
 from unstructured.utils import requires_dependencies
 
+from unstructured_inference.inference.layoutelement import LayoutElement
+from unstructured_inference.inference.elements import (
+    grow_region_to_match_region,
+    ImageTextRegion,
+    TextRegion
+)
+from unstructured_inference.inference.layout import DocumentLayout
+
+from Levenshtein import ration as levenshtein_ratio
+
+
 if TYPE_CHECKING:
     pass
 
@@ -363,6 +374,154 @@ def get_the_last_modification_date_pdf_or_img(
     return last_modification_date
 
 
+def find_longest_suffix_prefix_overlap(
+    main_string: str,
+    other_string: str,
+    ratio_threshold: float = 0.98
+) -> int:
+    """NOTE(GravO): added by NeuralShift. Finds the longest substring that is both a
+    suffix of main_string and a preffix of other_string. Returns the length of the
+    longest overlapping match. The match is done using fuzzy matching with
+    ratio_threshold (which defaults to 0.98).
+    """
+    min_length = min(len(main_string), len(other_string))
+    longest_overlap = 0
+    for i in range(1, min_length + 1):
+        suffix = main_string[-i:]
+        prefix = other_string[:i]
+        if levenshtein_ratio(suffix, prefix) > ratio_threshold:
+            longest_overlap = i
+    return longest_overlap
+
+
+@requires_dependencies("unstructured_inference")
+def add_text_to_inferred_bboxes(inferred_document_layout: DocumentLayout, filename: str):
+    """NOTE(GravO): added by NeuralShift. Adds text to the bounding boxes detected by
+    the vision model (using the OCR-ed text that is already present in the pdf).
+    TODO check if we actually extracted text (i.e. if there is text alread OCR-ed). If
+    not, add text using the OCR agent
+
+    Args:
+        inferred_document_layout (DocumentLayout): DocumentLayout object containing the
+        bounding boxes identified by the vision model (YOLO).
+        filename (str): Filename of the pdf where the bboxes were detected.
+    """
+    import fitz  # PyMuPDF
+    from unstructured.partition.pdf_image.pdf_image_utils import pad_element_bboxes
+    pdf_document = fitz.open(filename)
+    for page_index in range(len(inferred_document_layout.pages)):
+        pdf_page = pdf_document.load_page(page_index)
+        layout_page = inferred_document_layout.pages[page_index]
+        for element in layout_page.elements:
+            if element.text:
+                continue
+            PADDING = -2
+            element.text = pdf_page.get_text(
+                "text",
+                clip=(
+                    (element.bbox.x1/layout_page.image_metadata["width"]) * pdf_page.rect.width,
+                    (element.bbox.y1/layout_page.image_metadata["height"]) * pdf_page.rect.height - PADDING,
+                    (element.bbox.x2/layout_page.image_metadata["width"]) * pdf_page.rect.width,
+                    (element.bbox.y2/layout_page.image_metadata["height"]) * pdf_page.rect.height + PADDING
+                )
+            )
+
+
+@requires_dependencies("unstructured_inference")
+def merge_inferred_extracted_bboxes(
+    inferred_document_layout: DocumentLayout,
+    extracted_layout: List[List[TextRegion]]
+):
+    """NOTE(GravO): added by NeuralShift.
+    1. Start with the YOLO bboxes
+
+    2. Iterate over the OCR bboxes
+        2.1. If there are any OCR bbox that is not completly covered by the YOLO bboxes
+            2.1.1. Does it contain text that the YOLO bboxes do not?
+                Replace YOLO bbox with the OCR bbox
+
+    3. If there are still overlapping boxes, keep one of them and expand the other.
+    """
+    for page_index in range(len(inferred_document_layout.pages)):
+        final_layout = [
+            region for region in inferred_document_layout.pages[page_index].elements
+        ] # we start with the bboxes given by the vision model
+        for extracted_region in extracted_layout[page_index]:
+            # iterate over the OCR-ed regions to see if the vision model missed something
+            if extracted_region.text is None:
+                continue
+            intersections = [
+                region.bbox.intersection(extracted_region.bbox)
+                for region in final_layout
+            ]
+            has_intersection = [
+                intersection is not None
+                for intersection in intersections
+            ]
+            area_intersected = sum([
+                intersections[i].area
+                for i in range(len(intersections))
+                if has_intersection[i]
+            ])
+            if area_intersected / extracted_region.bbox.area < 0.9:
+                # if there is at least 10% of the OCR-ed region that is not covered
+                # by the vision model bbox, check if it contains some text vision model
+                # missed
+                ocred_text = extracted_region.text.strip()
+                to_remove = []
+                for i in range(len(intersections)):
+                    if has_intersection[i]:
+                        inferred_text = final_layout[i].text.strip()
+                        if inferred_text in ocred_text:
+                            ocred_text = ocred_text.replace(inferred_text, "", 1)
+                            to_remove.append(i)
+                        elif ocred_text in inferred_text:
+                            ocred_text = ""
+                            break
+                if len(ocred_text.strip()) > 0: # if the OCR-ed text still has text, we should add this OCR bbox
+                    final_layout = [
+                        final_layout[i]
+                        for i in range(len(intersections))
+                        if i not in to_remove
+                    ] # remove overlapping bboxes
+                    # and replace them with the OCR-ed bboxes
+                    final_layout.append(
+                        LayoutElement(
+                            text=extracted_region.text if extracted_region.text else extracted_region.text,
+                            type=ElementType.IMAGE
+                            if isinstance(extracted_region, ImageTextRegion)
+                            else ElementType.UNCATEGORIZED_TEXT,
+                            source=extracted_region.source,
+                            bbox=extracted_region.bbox,
+                        )
+                    )
+            # handle the situations where the bounding boxes have text in common, but
+            # both must be kept to have the full text. In this case, we only keep one
+            # of the bboxes and expand the other.
+            to_remove = []
+            for i in range(len(final_layout)-1, -1, -1):
+                for j in range(len(final_layout)):
+                    if i == j:
+                        continue
+                    overlap = find_longest_suffix_prefix_overlap(final_layout[j].text, final_layout[i].text)
+                    if (
+                        overlap > 10 and # the YOLO bbox ends with the start of the OCR bbox. >10 is used to avoid spurious matches
+                        final_layout[j].bbox.y2 > final_layout[i].bbox.y1 and # just to make sure the YOLO bbox is on the top of the OCR box
+                        final_layout[j].bbox.y1 < final_layout[i].bbox.y1
+                    ):
+                        grow_region_to_match_region(final_layout[j].bbox, final_layout[i].bbox)
+                        final_layout[j].text += final_layout[i].text[overlap:]
+                        del final_layout[i]
+                        break
+            final_layout = [
+                final_layout[i]
+                for i in range(len(final_layout))
+                if i not in to_remove
+            ] # remove overlapping bboxes
+        inferred_document_layout.pages[page_index].elements = final_layout
+    return inferred_document_layout
+
+
 @requires_dependencies("unstructured_inference")
 def _partition_pdf_or_image_local(
     filename: str = "",
@@ -443,22 +602,30 @@ def _partition_pdf_or_image_local(
                     is_image=is_image,
                 )
 
-            # NOTE(christine): merged_document_layout = extracted_layout + inferred_layout
-            merged_document_layout = merge_inferred_with_extracted_layout(
-                inferred_document_layout=inferred_document_layout,
-                extracted_layout=extracted_layout,
-            )
+            if ocr_mode == "ns_custom":
+                add_text_to_inferred_bboxes(inferred_document_layout, filename)
+                final_document_layout = merge_inferred_extracted_bboxes(
+                    inferred_document_layout=inferred_document_layout,
+                    extracted_layout=extracted_layout,
+                )
+                # TODO: add tables parsing
+            else:
+                # NOTE(christine): merged_document_layout = extracted_layout + inferred_layout
+                merged_document_layout = merge_inferred_with_extracted_layout(
+                    inferred_document_layout=inferred_document_layout,
+                    extracted_layout=extracted_layout,
+                )
 
-            final_document_layout = process_file_with_ocr(
-                filename,
-                merged_document_layout,
-                extracted_layout=extracted_layout,
-                is_image=is_image,
-                infer_table_structure=infer_table_structure,
-                ocr_languages=ocr_languages,
-                ocr_mode=ocr_mode,
-                pdf_image_dpi=pdf_image_dpi,
-            )
+                final_document_layout = process_file_with_ocr(
+                    filename,
+                    merged_document_layout,
+                    extracted_layout=extracted_layout,
+                    is_image=is_image,
+                    infer_table_structure=infer_table_structure,
+                    ocr_languages=ocr_languages,
+                    ocr_mode=ocr_mode,
+                    pdf_image_dpi=pdf_image_dpi,
+                )
     else:
         inferred_document_layout = process_data_with_model(
             file,
