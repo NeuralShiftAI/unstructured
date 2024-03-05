@@ -235,20 +235,40 @@ def supplement_page_layout_with_ocr(
 
     # Note(yuming): use the OCR data from entire page OCR for table extraction
     if infer_table_structure:
-        from unstructured_inference.models import tables
-
-        tables.load_agent()
-        if tables.tables_agent is None:
-            raise RuntimeError("Unable to load table extraction agent.")
-
-        page_layout.elements[:] = supplement_element_with_table_extraction(
-            elements=cast(List["LayoutElement"], page_layout.elements),
+        page_layout = add_tables_to_page(
+            page_layout,
             image=image,
-            tables_agent=tables.tables_agent,
             ocr_languages=ocr_languages,
             ocr_agent=ocr_agent,
-            extracted_regions=extracted_regions,
+            extracted_regions=extracted_regions
         )
+
+    return page_layout
+
+
+def add_tables_to_page(
+    page_layout: "PageLayout",
+    image: PILImage,
+    ocr_languages: str = "eng",
+    ocr_agent: OCRAgent = OCRAgent.get_instance(OCR_AGENT_TESSERACT),
+    extracted_regions: Optional[List["TextRegion"]] = None
+) -> "PageLayout":
+    # NOTE(GravO): this function was added by NS, but it essently contains the code
+    # originally written in supplement_page_layout_with_ocr
+    from unstructured_inference.models import tables
+
+    tables.load_agent()
+    if tables.tables_agent is None:
+        raise RuntimeError("Unable to load table extraction agent.")
+
+    page_layout.elements[:] = supplement_element_with_table_extraction(
+        elements=cast(List["LayoutElement"], page_layout.elements),
+        image=image,
+        tables_agent=tables.tables_agent,
+        ocr_languages=ocr_languages,
+        ocr_agent=ocr_agent,
+        extracted_regions=extracted_regions,
+    )
 
     return page_layout
 
