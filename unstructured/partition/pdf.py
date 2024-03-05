@@ -103,6 +103,7 @@ from unstructured.partition.utils.sorting import (
 from unstructured.patches.pdfminer import parse_keyword
 from unstructured.utils import requires_dependencies
 
+from unstructured.partition.pdf_image.pdf_image_utils import pad_element_bboxes
 from unstructured_inference.inference.layoutelement import LayoutElement
 from unstructured_inference.inference.elements import (
     grow_region_to_match_region,
@@ -110,8 +111,10 @@ from unstructured_inference.inference.elements import (
     TextRegion
 )
 from unstructured_inference.inference.layout import DocumentLayout
+from unstructured.partition.pdf_image.ocr import get_ocr_agent, add_tables_to_page
 
 from Levenshtein import ration as levenshtein_ratio
+import fitz  # PyMuPDF
 
 
 if TYPE_CHECKING:
@@ -395,21 +398,27 @@ def find_longest_suffix_prefix_overlap(
 
 
 @requires_dependencies("unstructured_inference")
-def add_text_to_inferred_bboxes(inferred_document_layout: DocumentLayout, filename: str):
-    """NOTE(GravO): added by NeuralShift. Adds text to the bounding boxes detected by
-    the vision model (using the OCR-ed text that is already present in the pdf).
-    TODO check if we actually extracted text (i.e. if there is text alread OCR-ed). If
-    not, add text using the OCR agent
+def custom_merge_inferred_extracted_bboxes(
+    inferred_document_layout: DocumentLayout,
+    extracted_layout: List[List[TextRegion]],
+    infer_table_structure: bool = False,
+    ocr_languages: str = "eng",
+):
+    """NOTE(GravO): added by NeuralShift.
+    1. Start with the vision model (YOLO) bboxes
 
-    Args:
-        inferred_document_layout (DocumentLayout): DocumentLayout object containing the
-        bounding boxes identified by the vision model (YOLO).
-        filename (str): Filename of the pdf where the bboxes were detected.
+    2. Iterate over the OCR bboxes
+        2.1. If there are any OCR bbox that is not completly covered by the YOLO bboxes
+            2.1.1. Does it contain text that the YOLO bboxes do not?
+                Replace YOLO bbox with the OCR bbox
+
+    3. If there are still overlapping boxes, keep one of them and expand the other.
     """
-    import fitz  # PyMuPDF
-    from unstructured.partition.pdf_image.pdf_image_utils import pad_element_bboxes
+    ocr_agent = get_ocr_agent()
     pdf_document = fitz.open(filename)
+
     for page_index in range(len(inferred_document_layout.pages)):
+        # add text to the vision model bboxes
         pdf_page = pdf_document.load_page(page_index)
         layout_page = inferred_document_layout.pages[page_index]
         for element in layout_page.elements:
@@ -426,23 +435,6 @@ def add_text_to_inferred_bboxes(inferred_document_layout: DocumentLayout, filena
                 )
             )
 
-
-@requires_dependencies("unstructured_inference")
-def merge_inferred_extracted_bboxes(
-    inferred_document_layout: DocumentLayout,
-    extracted_layout: List[List[TextRegion]]
-):
-    """NOTE(GravO): added by NeuralShift.
-    1. Start with the YOLO bboxes
-
-    2. Iterate over the OCR bboxes
-        2.1. If there are any OCR bbox that is not completly covered by the YOLO bboxes
-            2.1.1. Does it contain text that the YOLO bboxes do not?
-                Replace YOLO bbox with the OCR bbox
-
-    3. If there are still overlapping boxes, keep one of them and expand the other.
-    """
-    for page_index in range(len(inferred_document_layout.pages)):
         final_layout = [
             region for region in inferred_document_layout.pages[page_index].elements
         ] # we start with the bboxes given by the vision model
@@ -519,6 +511,18 @@ def merge_inferred_extracted_bboxes(
                 if i not in to_remove
             ] # remove overlapping bboxes
         inferred_document_layout.pages[page_index].elements = final_layout
+
+        # add table parsing
+        if infer_table_structure:
+            image = pdf_page.get_pixmap(alpha=False)
+            image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            inferred_document_layout.pages[page_index] = add_tables_to_page(
+                inferred_document_layout.pages[page_index],
+                image=image,
+                ocr_languages=ocr_languages,
+                ocr_agent=ocr_agent,
+                extracted_regions=inferred_document_layout.pages[page_index].elements
+            )
     return inferred_document_layout
 
 
@@ -603,12 +607,12 @@ def _partition_pdf_or_image_local(
                 )
 
             if ocr_mode == "ns_custom":
-                add_text_to_inferred_bboxes(inferred_document_layout, filename)
-                final_document_layout = merge_inferred_extracted_bboxes(
+                final_document_layout = custom_merge_inferred_extracted_bboxes(
                     inferred_document_layout=inferred_document_layout,
                     extracted_layout=extracted_layout,
+                    infer_table_structure=infer_table_structure,
+                    ocr_languages=ocr_languages,
                 )
-                # TODO: add tables parsing
             else:
                 # NOTE(christine): merged_document_layout = extracted_layout + inferred_layout
                 merged_document_layout = merge_inferred_with_extracted_layout(
