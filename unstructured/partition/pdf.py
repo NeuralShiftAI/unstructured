@@ -402,6 +402,7 @@ def custom_merge_inferred_extracted_bboxes(
     inferred_document_layout: DocumentLayout,
     extracted_layout: List[List[TextRegion]],
     filename: str,
+    pdf_image_dpi: Optional[int] = None,
     infer_table_structure: bool = False,
     remove_partial_overlaps: bool = False,
     ocr_languages: str = "eng",
@@ -517,7 +518,7 @@ def custom_merge_inferred_extracted_bboxes(
 
         # add table parsing
         if infer_table_structure:
-            image = pdf_page.get_pixmap(alpha=False)
+            image = pdf_page.get_pixmap(alpha=False, dpi=pdf_image_dpi)
             image = PILImage.frombytes("RGB", [image.width, image.height], image.samples)
             inferred_document_layout.pages[page_index] = add_tables_to_page(
                 inferred_document_layout.pages[page_index],
@@ -614,6 +615,7 @@ def _partition_pdf_or_image_local(
                     inferred_document_layout=inferred_document_layout,
                     extracted_layout=extracted_layout,
                     filename=filename,
+                    pdf_image_dpi=pdf_image_dpi,
                     infer_table_structure=infer_table_structure,
                     ocr_languages=ocr_languages,
                 )
