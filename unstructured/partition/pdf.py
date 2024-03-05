@@ -113,7 +113,7 @@ from unstructured_inference.inference.elements import (
 from unstructured_inference.inference.layout import DocumentLayout
 from unstructured.partition.pdf_image.ocr import get_ocr_agent, add_tables_to_page
 
-from Levenshtein import ration as levenshtein_ratio
+from Levenshtein import ratio as levenshtein_ratio
 import fitz  # PyMuPDF
 
 
@@ -401,7 +401,9 @@ def find_longest_suffix_prefix_overlap(
 def custom_merge_inferred_extracted_bboxes(
     inferred_document_layout: DocumentLayout,
     extracted_layout: List[List[TextRegion]],
+    filename: str,
     infer_table_structure: bool = False,
+    remove_partial_overlaps: bool = False,
     ocr_languages: str = "eng",
 ):
     """NOTE(GravO): added by NeuralShift.
@@ -487,35 +489,36 @@ def custom_merge_inferred_extracted_bboxes(
                             bbox=extracted_region.bbox,
                         )
                     )
-            # handle the situations where the bounding boxes have text in common, but
-            # both must be kept to have the full text. In this case, we only keep one
-            # of the bboxes and expand the other.
-            to_remove = []
-            for i in range(len(final_layout)-1, -1, -1):
-                for j in range(len(final_layout)):
-                    if i == j:
-                        continue
-                    overlap = find_longest_suffix_prefix_overlap(final_layout[j].text, final_layout[i].text)
-                    if (
-                        overlap > 10 and # the YOLO bbox ends with the start of the OCR bbox. >10 is used to avoid spurious matches
-                        final_layout[j].bbox.y2 > final_layout[i].bbox.y1 and # just to make sure the YOLO bbox is on the top of the OCR box
-                        final_layout[j].bbox.y1 < final_layout[i].bbox.y1
-                    ):
-                        grow_region_to_match_region(final_layout[j].bbox, final_layout[i].bbox)
-                        final_layout[j].text += final_layout[i].text[overlap:]
-                        del final_layout[i]
-                        break
-            final_layout = [
-                final_layout[i]
-                for i in range(len(final_layout))
-                if i not in to_remove
-            ] # remove overlapping bboxes
+            if remove_partial_overlaps:
+                # handle the situations where the bounding boxes have text in common, but
+                # both must be kept to have the full text. In this case, we only keep one
+                # of the bboxes and expand the other.
+                to_remove = []
+                for i in range(len(final_layout)-1, -1, -1):
+                    for j in range(len(final_layout)):
+                        if i == j:
+                            continue
+                        overlap = find_longest_suffix_prefix_overlap(final_layout[j].text, final_layout[i].text)
+                        if (
+                            overlap > 10 and # the YOLO bbox ends with the start of the OCR bbox. >10 is used to avoid spurious matches
+                            final_layout[j].bbox.y2 > final_layout[i].bbox.y1 and # just to make sure the YOLO bbox is on the top of the OCR box
+                            final_layout[j].bbox.y1 < final_layout[i].bbox.y1
+                        ):
+                            grow_region_to_match_region(final_layout[j].bbox, final_layout[i].bbox)
+                            final_layout[j].text += final_layout[i].text[overlap:]
+                            del final_layout[i]
+                            break
+                final_layout = [
+                    final_layout[i]
+                    for i in range(len(final_layout))
+                    if i not in to_remove
+                ] # remove overlapping bboxes
         inferred_document_layout.pages[page_index].elements = final_layout
 
         # add table parsing
         if infer_table_structure:
             image = pdf_page.get_pixmap(alpha=False)
-            image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            image = PILImage.frombytes("RGB", [image.width, image.height], image.samples)
             inferred_document_layout.pages[page_index] = add_tables_to_page(
                 inferred_document_layout.pages[page_index],
                 image=image,
@@ -610,6 +613,7 @@ def _partition_pdf_or_image_local(
                 final_document_layout = custom_merge_inferred_extracted_bboxes(
                     inferred_document_layout=inferred_document_layout,
                     extracted_layout=extracted_layout,
+                    filename=filename,
                     infer_table_structure=infer_table_structure,
                     ocr_languages=ocr_languages,
                 )
@@ -730,9 +734,9 @@ def _partition_pdf_or_image_local(
             continue
 
         if (
-            isinstance(el, Image) 
-            or el.text 
-            or isinstance(el, PageBreak) 
+            isinstance(el, Image)
+            or el.text
+            or isinstance(el, PageBreak)
             or hi_res_model_name.startswith("chipper")
         ):
             out_elements.append(cast(Element, el))
