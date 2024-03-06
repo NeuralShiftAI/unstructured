@@ -401,13 +401,19 @@ def find_longest_suffix_prefix_overlap(
 def custom_merge_inferred_extracted_bboxes(
     inferred_document_layout: DocumentLayout,
     extracted_layout: List[List[TextRegion]],
-    filename: str,
+    filename: Optional[str] = None,
+    file: Optional[Union[bytes, BinaryIO]] = None,
     pdf_image_dpi: Optional[int] = None,
     infer_table_structure: bool = False,
     remove_partial_overlaps: bool = False,
     ocr_languages: str = "eng",
 ):
-    """NOTE(GravO): added by NeuralShift.
+    """NOTE(GravO): added by NeuralShift. This was added as a replacement of
+    Unstructured's merging algorithm because Unstructured sometimes does some unwanted
+    merges and conversion of bboxes types. Since the bbox types predicted by the vision
+    models are usually correct, this algorithm uses these bboxes as a starting point and
+    only considers the OCR bboxes when text is missed.
+    Algorithm:
     1. Start with the vision model (YOLO) bboxes
 
     2. Iterate over the OCR bboxes
@@ -418,7 +424,12 @@ def custom_merge_inferred_extracted_bboxes(
     3. If there are still overlapping boxes, keep one of them and expand the other.
     """
     ocr_agent = get_ocr_agent()
-    pdf_document = fitz.open(filename)
+    if filename:
+        pdf_document = fitz.open(filename)
+    elif file:
+        pdf_document = fitz.open("pdf", file.read())
+    else:
+        raise ValueError("You must specify either filename or file")
 
     for page_index in range(len(inferred_document_layout.pages)):
         # add text to the vision model bboxes
@@ -658,24 +669,35 @@ def _partition_pdf_or_image_local(
                 else []
             )
 
-            # NOTE(christine): merged_document_layout = extracted_layout + inferred_layout
-            merged_document_layout = merge_inferred_with_extracted_layout(
-                inferred_document_layout=inferred_document_layout,
-                extracted_layout=extracted_layout,
-            )
-
             if hasattr(file, "seek"):
                 file.seek(0)
-            final_document_layout = process_data_with_ocr(
-                file,
-                merged_document_layout,
-                extracted_layout=extracted_layout,
-                is_image=is_image,
-                infer_table_structure=infer_table_structure,
-                ocr_languages=ocr_languages,
-                ocr_mode=ocr_mode,
-                pdf_image_dpi=pdf_image_dpi,
-            )
+
+            if ocr_mode == "ns_custom":
+                final_document_layout = custom_merge_inferred_extracted_bboxes(
+                    inferred_document_layout=inferred_document_layout,
+                    extracted_layout=extracted_layout,
+                    file=file,
+                    pdf_image_dpi=pdf_image_dpi,
+                    infer_table_structure=infer_table_structure,
+                    ocr_languages=ocr_languages,
+                )
+            else:
+                # NOTE(christine): merged_document_layout = extracted_layout + inferred_layout
+                merged_document_layout = merge_inferred_with_extracted_layout(
+                    inferred_document_layout=inferred_document_layout,
+                    extracted_layout=extracted_layout,
+                )
+
+                final_document_layout = process_data_with_ocr(
+                    file,
+                    merged_document_layout,
+                    extracted_layout=extracted_layout,
+                    is_image=is_image,
+                    infer_table_structure=infer_table_structure,
+                    ocr_languages=ocr_languages,
+                    ocr_mode=ocr_mode,
+                    pdf_image_dpi=pdf_image_dpi,
+                )
 
     # NOTE(alan): starting with v2, chipper sorts the elements itself.
     if hi_res_model_name.startswith("chipper") and hi_res_model_name != "chipperv1":
