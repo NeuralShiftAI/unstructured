@@ -621,7 +621,7 @@ def _partition_pdf_or_image_local(
                     is_image=is_image,
                 )
 
-            if ocr_mode == "ns_custom":
+            if ocr_mode == "ns_custom" and pdf_text_extractable:
                 final_document_layout = custom_merge_inferred_extracted_bboxes(
                     inferred_document_layout=inferred_document_layout,
                     extracted_layout=extracted_layout,
@@ -631,6 +631,9 @@ def _partition_pdf_or_image_local(
                     ocr_languages=ocr_languages,
                 )
             else:
+                if ocr_mode == "ns_custom":
+                    logger.warning("Pdf has no OCR. Defaulting to ocr_mode=individual_blocks")
+                    ocr_mode = "individual_blocks"
                 # NOTE(christine): merged_document_layout = extracted_layout + inferred_layout
                 merged_document_layout = merge_inferred_with_extracted_layout(
                     inferred_document_layout=inferred_document_layout,
@@ -672,7 +675,7 @@ def _partition_pdf_or_image_local(
             if hasattr(file, "seek"):
                 file.seek(0)
 
-            if ocr_mode == "ns_custom":
+            if ocr_mode == "ns_custom" and pdf_text_extractable:
                 final_document_layout = custom_merge_inferred_extracted_bboxes(
                     inferred_document_layout=inferred_document_layout,
                     extracted_layout=extracted_layout,
@@ -682,6 +685,9 @@ def _partition_pdf_or_image_local(
                     ocr_languages=ocr_languages,
                 )
             else:
+                if ocr_mode == "ns_custom":
+                    logger.warning("Pdf has no OCR. Defaulting to ocr_mode=individual_blocks")
+                    ocr_mode = "individual_blocks"
                 # NOTE(christine): merged_document_layout = extracted_layout + inferred_layout
                 merged_document_layout = merge_inferred_with_extracted_layout(
                     inferred_document_layout=inferred_document_layout,
